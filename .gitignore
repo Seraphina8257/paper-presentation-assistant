@@ -1,0 +1,21 @@
+# Local credentials and configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+*.pfx
+*.key
+
+# Local installs, caches and operating-system files
+node_modules/
+.DS_Store
+__MACOSX/
+._*
+*.log
+
+# User-imported papers and local exports
+*.pdf
+uploads/
+exports/
+data/
