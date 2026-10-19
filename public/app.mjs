@@ -2,6 +2,7 @@ import * as pdfjs from './vendor/pdf.mjs';
 import { getLastProjectId, getPaper, getProject, pdfFingerprint, savePaper, saveProject, setLastProjectId } from './storage.mjs';
 import { extractPdfVisuals } from './visual-extraction.mjs';
 import { assignVisuals, visualStats } from './visual-plan.mjs';
+import { draftSpeakerNotes, exportSpeakerNotesText } from './speaker-notes.mjs';
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL('./vendor/pdf.worker.mjs', import.meta.url).href;
 
@@ -327,21 +328,16 @@ function renderOutline() {
 
 function slideById(id) { return state.slides.find(slide => slide.id === id); }
 
-function notesSource(slide) {
-  return JSON.stringify([slide.title, slide.message, slide.bullets]);
-}
-
-function draftSpeakerNotes(slide) {
-  const lines = [slide.message, ...slide.bullets].map(text => String(text || '').trim()).filter(Boolean);
-  return [...new Set(lines)].map(text => /[。！？.!?]$/.test(text) ? text : `${text}。`).join('\n');
+function notesSource(slide, nextSlide) {
+  return JSON.stringify(['speech-v2', slide.title, slide.message, slide.bullets, nextSlide?.title || '']);
 }
 
 function prepareSpeakerNotes() {
-  for (const slide of state.slides) {
+  for (const [index, slide] of state.slides.entries()) {
     if (slide.notesEdited) continue;
-    const source = notesSource(slide);
+    const source = notesSource(slide, state.slides[index + 1]);
     if (slide.notesSource !== source) {
-      slide.speakerNotes = draftSpeakerNotes(slide);
+      slide.speakerNotes = draftSpeakerNotes(slide, state.slides[index + 1]);
       slide.notesSource = source;
     }
   }
@@ -394,10 +390,11 @@ function slideHtml(slide, index, print = false) {
 
 function renderSlideStudio() {
   if (!state.slides.length) return;
+  prepareSpeakerNotes();
   state.selected = Math.max(0, Math.min(state.selected, state.slides.length - 1));
   const slide = state.slides[state.selected];
   $('preview-index').textContent = `第 ${state.selected + 1} / ${state.slides.length} 页`;
-  $('slide-stage').innerHTML = slideHtml(slide, state.selected);
+  $('slide-stage').innerHTML = `${slideHtml(slide, state.selected)}<button class="fullscreen-exit" type="button" aria-label="退出全屏">退出全屏 Esc</button>`;
   $('slide-thumbs').innerHTML = state.slides.map((item, index) => `<button class="thumb ${index === state.selected ? 'active' : ''}" data-index="${index}" aria-label="查看第 ${index + 1} 页">${String(index + 1).padStart(2, '0')}</button>`).join('');
   $('layout-select').value = slide.layout;
   $('theme-select').value = state.theme;
@@ -414,7 +411,7 @@ function renderSlideStudio() {
   }).join('') || '<span class="visual-empty-note">当前页没有自动提取的图表</span>';
   $('insert-paper-page').disabled = !state.pdf;
   $('speaker-notes-input').value = slide.speakerNotes || '';
-  const stale = slide.notesEdited && slide.notesSource !== notesSource(slide);
+  const stale = slide.notesEdited && slide.notesSource !== notesSource(slide, state.slides[state.selected + 1]);
   $('speaker-notes-status').textContent = stale ? '大纲已修改，请检查讲稿' : slide.notesEdited ? '已手动修改' : '根据大纲整理';
   $('speaker-notes-status').classList.toggle('stale', stale);
   $('speaker-notes-source').textContent = slide.pages.length ? `内容依据：PDF 第 ${slide.pages.join('、')} 页` : '当前页没有标注论文页码';
@@ -423,7 +420,7 @@ function renderSlideStudio() {
 }
 
 function refreshCurrentSlide() {
-  $('slide-stage').innerHTML = slideHtml(state.slides[state.selected], state.selected);
+  $('slide-stage').innerHTML = `${slideHtml(state.slides[state.selected], state.selected)}<button class="fullscreen-exit" type="button" aria-label="退出全屏">退出全屏 Esc</button>`;
   scheduleSave();
 }
 
@@ -487,7 +484,7 @@ $('speaker-notes-input').addEventListener('input', event => {
   const slide = state.slides[state.selected];
   slide.speakerNotes = event.target.value;
   slide.notesEdited = true;
-  slide.notesSource = notesSource(slide);
+  slide.notesSource = notesSource(slide, state.slides[state.selected + 1]);
   $('speaker-notes-status').textContent = '已手动修改';
   $('speaker-notes-status').classList.remove('stale');
   scheduleSave();
@@ -497,6 +494,30 @@ $('copy-speaker-notes').addEventListener('click', async () => {
     await navigator.clipboard.writeText(state.slides[state.selected].speakerNotes || '');
     toast('本页讲稿已复制。');
   } catch { toast('复制失败，请选中讲稿文字后手动复制。'); }
+});
+$('export-speaker-notes').addEventListener('click', () => {
+  prepareSpeakerNotes();
+  const content = exportSpeakerNotesText(state.slides, state.fileName);
+  const blob = new Blob(['\ufeff', content], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `${(state.fileName || '文献汇报').replace(/\.pdf$/i, '').replace(/[\\/:*?"<>|]/g, '_')}-演讲稿.txt`;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  toast('全部演讲稿已导出。');
+});
+$('fullscreen-slides').addEventListener('click', async () => {
+  try {
+    const stage = $('slide-stage');
+    if (document.fullscreenElement === stage) await document.exitFullscreen();
+    else await stage.requestFullscreen();
+  } catch { toast('当前浏览器未能进入全屏，请在普通浏览器中打开后重试。'); }
+});
+$('slide-stage').addEventListener('click', event => {
+  if (event.target.closest('.fullscreen-exit')) document.exitFullscreen();
 });
 $('layout-select').addEventListener('change', event => { state.slides[state.selected].layout = event.target.value; refreshCurrentSlide(); });
 $('theme-select').addEventListener('change', event => { state.theme = event.target.value; refreshCurrentSlide(); });
