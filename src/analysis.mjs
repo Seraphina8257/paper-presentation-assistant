@@ -128,13 +128,14 @@ export function buildFallbackAnalysis(pages) {
   };
 }
 
-export function makeModelInput(pages) {
+export function makeModelInput(pages, visuals = []) {
   const text = pages.map(page => `【PDF 第 ${page.page} 页】\n${String(page.text).slice(0, 7000)}`).join('\n\n');
   const notice = text.length > 80000 ? '注意：由于长度限制，以下只包含论文前一部分文字；不要把未提供的章节当成论文没有，也不要推测其结果。\n\n' : '';
-  return `请仅依据以下论文内容生成理解卡片和汇报大纲。页码必须来自对应内容所在的 PDF 页面，不确定时写 null。\n\n${notice}${text.slice(0, 80000)}`;
+  const manifest = visuals.length ? `\n\n【已提取图表素材清单】\n${visuals.map(item => `${item.id}｜PDF 第 ${item.page} 页｜${item.type}｜${item.title}`).join('\n')}\n大纲中的 visualIds 只可使用以上真实 ID；无法判断内容时留空，后续程序会按页码补齐全部素材。` : '';
+  return `请仅依据以下论文内容生成理解卡片和汇报大纲。页码必须来自对应内容所在的 PDF 页面，不确定时写 null。\n\n${notice}${text.slice(0, 80000)}${manifest}`;
 }
 
-export function validateAnalysis(value, pageCount) {
+export function validateAnalysis(value, pageCount, knownVisualIds = []) {
   if (!value || typeof value.title !== 'string' || !value.sections || !Array.isArray(value.slides)) {
     throw new Error('模型输出结构不完整。');
   }
@@ -146,13 +147,15 @@ export function validateAnalysis(value, pageCount) {
       page: Number.isInteger(input.page) && input.page >= 1 && input.page <= pageCount ? input.page : null
     };
   }
+  const known = new Set(knownVisualIds);
   const slides = value.slides.slice(0, 10).map((slide, index) => ({
     id: `slide-${index + 1}`,
     title: String(slide.title || `第 ${index + 1} 页`).slice(0, 80),
     message: String(slide.message || '').slice(0, 500),
     bullets: Array.isArray(slide.bullets) ? slide.bullets.slice(0, 5).map(item => String(item).slice(0, 160)) : [],
     pages: Array.isArray(slide.pages) ? [...new Set(slide.pages.filter(page => Number.isInteger(page) && page >= 1 && page <= pageCount))] : [],
-    layout: ['cover', 'statement', 'split', 'steps', 'summary'].includes(slide.layout) ? slide.layout : 'statement'
+    layout: ['cover', 'statement', 'split', 'steps', 'summary', 'visuals'].includes(slide.layout) ? slide.layout : 'statement',
+    visualIds: Array.isArray(slide.visualIds) ? [...new Set(slide.visualIds.filter(id => known.has(id)))] : []
   }));
   if (!slides.length) throw new Error('模型没有生成汇报大纲。');
   const guide = Object.fromEntries(guideKeys.map(key => [key,

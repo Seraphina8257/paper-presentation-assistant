@@ -33,10 +33,10 @@ async function readJson(request) {
   return JSON.parse(text);
 }
 
-async function modelAnalysis(pages) {
+async function modelAnalysis(pages, visuals = []) {
   const apiKey = process.env.DEEPSEEK_API_KEY;
   if (!apiKey) return buildFallbackAnalysis(pages);
-  return analyzeWithDeepSeek(pages, { apiKey, model: process.env.DEEPSEEK_MODEL || 'deepseek-flash' });
+  return analyzeWithDeepSeek(pages, { apiKey, visuals, model: process.env.DEEPSEEK_MODEL || 'deepseek-flash' });
 }
 
 const server = createServer(async (request, response) => {
@@ -46,7 +46,7 @@ const server = createServer(async (request, response) => {
       return sendJson(response, 200, { ok: true, aiConfigured: Boolean(process.env.DEEPSEEK_API_KEY), provider: 'DeepSeek' });
     }
     if (request.method === 'POST' && url.pathname === '/api/analyze') {
-      const { pages } = await readJson(request);
+      const { pages, visuals = [] } = await readJson(request);
       if (!Array.isArray(pages) || !pages.length || pages.length > 100 ||
           pages.some(page => !Number.isInteger(page.page) || page.page < 1 || typeof page.text !== 'string')) {
         return sendJson(response, 400, { error: '论文页面数据无效。' });
@@ -54,7 +54,12 @@ const server = createServer(async (request, response) => {
       if (pages.every(page => !page.text.trim())) {
         return sendJson(response, 400, { error: '没有提取到文字；当前原型暂不支持扫描版 PDF。' });
       }
-      return sendJson(response, 200, await modelAnalysis(pages));
+      if (!Array.isArray(visuals) || visuals.length > 500 || visuals.some(item => typeof item.id !== 'string' ||
+        !/^pdf-\d+-\d+$/.test(item.id) || !Number.isInteger(item.page) || item.page < 1 || item.page > pages.length ||
+        typeof item.title !== 'string' || item.title.length > 180 || typeof item.type !== 'string')) {
+        return sendJson(response, 400, { error: '图表素材清单无效。' });
+      }
+      return sendJson(response, 200, await modelAnalysis(pages, visuals));
     }
     if (request.method !== 'GET') return sendJson(response, 405, { error: '不支持的请求方法。' });
     const decoded = decodeURIComponent(url.pathname);

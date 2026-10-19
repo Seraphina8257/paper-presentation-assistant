@@ -1,5 +1,7 @@
 import * as pdfjs from './vendor/pdf.mjs';
 import { getLastProjectId, getPaper, getProject, pdfFingerprint, savePaper, saveProject, setLastProjectId } from './storage.mjs';
+import { extractPdfVisuals } from './visual-extraction.mjs';
+import { assignVisuals, visualStats } from './visual-plan.mjs';
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL('./vendor/pdf.worker.mjs', import.meta.url).href;
 
@@ -19,7 +21,7 @@ const guideLabels = [
   ['logicChain', '论文逻辑链', '按论文真实顺序串起研究过程']
 ];
 const basisLabels = { source: '原文信息', inference: '基于原文的解释', unknown: '原文未说明' };
-const layoutLabels = { cover: '封面', statement: '重点陈述', split: '图文分栏', steps: '方法流程', summary: '总结' };
+const layoutLabels = { cover: '封面', statement: '重点陈述', split: '图文分栏', steps: '方法流程', summary: '总结', visuals: '图表展示' };
 const demoPages = [
   { page: 1, text: '演示材料：校园公共空间导视体验练习（虚构示例）\n研究背景：新生初次进入校园公共空间时，需要辨认建筑入口、服务窗口和行走路径。研究问题：如何梳理他们在寻找目的地时遇到的信息障碍？' },
   { page: 2, text: '研究方法：本练习设想使用现场观察和半结构访谈，记录使用者寻找目的地时的行为与表达。研究设计：先记录典型路线，再整理信息触点，最后归纳可能的设计机会。这里不包含真实调研数据。' },
@@ -28,6 +30,7 @@ const demoPages = [
 
 const state = {
   step: 'upload', projectId: null, fileName: '', pages: [], pdf: null, analysis: null, slides: [],
+  visuals: [], visualFailures: [], excludedVisualIds: [],
   confirmed: false, selected: 0, theme: 'cream', fontSize: 100, imageSize: 100
 };
 const $ = id => document.getElementById(id);
@@ -44,7 +47,8 @@ function projectSnapshot() {
   return {
     id: state.projectId, slides: state.slides, confirmed: state.confirmed,
     selected: state.selected, step: state.step, theme: state.theme,
-    fontSize: state.fontSize, imageSize: state.imageSize, updatedAt: Date.now()
+    fontSize: state.fontSize, imageSize: state.imageSize, excludedVisualIds: state.excludedVisualIds,
+    updatedAt: Date.now()
   };
 }
 
@@ -132,14 +136,25 @@ function setBusy(busy, message = '') {
   $('use-demo').disabled = busy;
 }
 
-async function processPages(pages, fileName, pdf = null, projectId = null, pdfBlob = null) {
+function loadVisuals(visuals = [], failures = []) {
+  for (const visual of state.visuals) if (visual.url) URL.revokeObjectURL(visual.url);
+  state.visuals = visuals.map(visual => ({ ...visual, url: visual.blob ? URL.createObjectURL(visual.blob) : null }));
+  state.visualFailures = failures;
+}
+
+function ensureVisualsAssigned() {
+  assignVisuals(state.slides, state.visuals, state.excludedVisualIds);
+  renderVisualSummary();
+}
+
+async function processPages(pages, fileName, pdf = null, projectId = null, pdfBlob = null, extraction = { visuals: [], failures: [] }) {
   $('upload-result').hidden = false;
   $('upload-result').innerHTML = `<strong>${escapeHtml(fileName)}</strong> · ${pages.length} 页 · 正在梳理内容…`;
   setBusy(true, '正在分析论文');
   try {
     const response = await fetch('/api/analyze', {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ pages })
+      body: JSON.stringify({ pages, visuals: extraction.visuals.map(({ id, page, number, title, type }) => ({ id, page, number, title, type })) })
     });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || '分析失败。');
@@ -148,14 +163,18 @@ async function processPages(pages, fileName, pdf = null, projectId = null, pdfBl
     state.pdf = pdf;
     state.projectId = projectId;
     state.analysis = result;
-    state.slides = result.slides.map((slide, index) => ({ ...slide, id: `slide-${index + 1}`, image: null, speakerNotes: '', notesEdited: false, notesSource: '' }));
+    loadVisuals(extraction.visuals, extraction.failures);
+    state.excludedVisualIds = [];
+    state.slides = result.slides.map((slide, index) => ({ ...slide, id: `slide-${index + 1}`, visuals: slide.visualIds || [], image: null, speakerNotes: '', notesEdited: false, notesSource: '' }));
+    ensureVisualsAssigned();
     state.confirmed = false;
     state.selected = 0;
     renderUnderstanding();
     renderOutline();
     if (projectId && pdfBlob) {
       try {
-        await savePaper({ id: projectId, fileName, pdfBlob, pages, analysis: result, createdAt: Date.now() });
+        await savePaper({ id: projectId, fileName, pdfBlob, pages, analysis: result, visuals: extraction.visuals,
+          visualFailures: extraction.failures, visualsVersion: 1, createdAt: Date.now() });
         await saveCurrentProject();
       } catch (error) {
         state.projectId = null;
@@ -163,7 +182,7 @@ async function processPages(pages, fileName, pdf = null, projectId = null, pdfBl
         toast(`本地保存失败：${error.message}。本次仍可继续使用。`);
       }
     }
-    $('upload-result').innerHTML = `<strong>${escapeHtml(fileName)}</strong> · ${pages.length} 页 · 已提取文字，${result.mode === 'ai' ? 'DeepSeek 分析完成' : '规则提取演示完成'}`;
+    $('upload-result').innerHTML = `<strong>${escapeHtml(fileName)}</strong> · ${pages.length} 页 · 已提取文字与 ${state.visuals.length} 份图表素材，${result.mode === 'ai' ? 'DeepSeek 分析完成' : '规则提取演示完成'}`;
     setStep('understand');
     if (result.mode !== 'ai') toast('未配置模型接口：当前是规则提取演示结果，请自行核对并修改大纲。');
   } catch (error) {
@@ -179,14 +198,22 @@ async function restoreProject(projectId, label = '已恢复本地记录') {
   try { savedProject = await getProject(projectId); } catch { savedProject = null; }
   const project = readImmediateDraft(projectId, savedProject);
   const pdf = await pdfjs.getDocument({ data: new Uint8Array(await paper.pdfBlob.arrayBuffer()) }).promise;
+  if (paper.visualsVersion !== 1) {
+    const found = await extractPdfVisuals(pdf, (page, total) => { $('mode-pill').textContent = `正在补提取图表 ${page}/${total} 页`; });
+    paper.visuals = found.visuals; paper.visualFailures = found.failures; paper.visualsVersion = 1;
+    try { await savePaper(paper); } catch { toast('图表已提取，但浏览器存储空间不足；刷新后可能需要再次提取。'); }
+  }
   state.projectId = projectId;
   state.fileName = paper.fileName;
   state.pages = paper.pages;
   state.pdf = pdf;
   state.analysis = paper.analysis;
+  loadVisuals(paper.visuals || [], paper.visualFailures || []);
+  state.excludedVisualIds = project?.excludedVisualIds || [];
   state.slides = project?.slides?.length ? project.slides : paper.analysis.slides.map((slide, index) => ({
-    ...slide, id: `slide-${index + 1}`, image: null, speakerNotes: '', notesEdited: false, notesSource: ''
+    ...slide, id: `slide-${index + 1}`, visuals: slide.visualIds || [], image: null, speakerNotes: '', notesEdited: false, notesSource: ''
   }));
+  ensureVisualsAssigned();
   state.confirmed = Boolean(project?.confirmed);
   state.selected = Number.isInteger(project?.selected) ? project.selected : 0;
   state.theme = project?.theme || 'cream';
@@ -234,7 +261,8 @@ async function readPdf(file) {
       pages.push({ page: i, text });
     }
     if (pages.every(page => page.text.length < 20)) throw new Error('没有提取到足够文字；扫描版 PDF 暂不支持。');
-    await processPages(pages, file.name, pdf, projectId, pdfBlob);
+    const extraction = await extractPdfVisuals(pdf, (page, total) => { $('mode-pill').textContent = `正在提取图表 ${page}/${total} 页`; });
+    await processPages(pages, file.name, pdf, projectId, pdfBlob, extraction);
   } catch (error) { toast(`读取失败：${error.message}`); setBusy(false); }
 }
 
@@ -272,6 +300,18 @@ function updateGateStatus() {
   status.classList.toggle('confirmed', state.confirmed);
 }
 
+function renderVisualSummary() {
+  const stats = visualStats(state.slides, state.visuals, state.visualFailures, state.excludedVisualIds);
+  const summary = $('visual-summary');
+  if (!summary) return;
+  const label = `图表素材：成功提取 ${stats.extracted} · 已插入 ${stats.inserted} · 失败 ${stats.failed}${stats.removed ? ` · 手动移除 ${stats.removed}` : ''}${stats.unassigned ? ` · 待分配 ${stats.unassigned}` : ''}`;
+  summary.textContent = label;
+  if ($('slide-visual-summary')) $('slide-visual-summary').textContent = label;
+  const catalog = $('visual-catalog');
+  catalog.innerHTML = [...state.visuals.map(visual => `<div class="visual-catalog-item"><img src="${escapeAttr(visual.url)}" alt="${escapeAttr(visual.title)}" /><span><strong>${escapeHtml(visual.title)}</strong><small>PDF 第 ${visual.page} 页 · ${visual.source === 'embedded-image' ? '嵌入图片' : '区域裁切'} · ${state.excludedVisualIds.includes(visual.id) ? '已手动移除' : '提取成功'}</small></span></div>`),
+    ...state.visualFailures.map(item => `<div class="visual-catalog-item failure"><span><strong>${escapeHtml(item.title)}</strong><small>PDF 第 ${item.page} 页 · 提取失败：${escapeHtml(item.reason)}</small></span></div>`)].join('') || '<p>未定位到可单独提取的图表。你仍可在页面中手动添加图片。</p>';
+}
+
 function renderOutline() {
   $('outline-count').textContent = `${state.slides.length} 页大纲`;
   $('outline-rationale').textContent = state.analysis?.outlineRationale || '请根据论文内容调整大纲。';
@@ -280,7 +320,9 @@ function renderOutline() {
     <div class="outline-num">${String(index + 1).padStart(2, '0')}</div>
     <div class="outline-body"><div class="outline-card-head"><span>SLIDE ${String(index + 1).padStart(2, '0')}</span><div class="small-actions"><button data-action="up" title="上移" aria-label="上移第 ${index + 1} 页" ${index === 0 ? 'disabled' : ''}>↑</button><button data-action="down" title="下移" aria-label="下移第 ${index + 1} 页" ${index === state.slides.length - 1 ? 'disabled' : ''}>↓</button><button data-action="delete" class="delete" title="删除" aria-label="删除第 ${index + 1} 页">×</button></div></div>
       <div class="field-grid"><label>页面标题<input data-field="title" value="${escapeAttr(slide.title)}" maxlength="80" /></label><label>预设版式<select data-field="layout">${Object.entries(layoutLabels).map(([key, label]) => `<option value="${key}" ${slide.layout === key ? 'selected' : ''}>${label}</option>`).join('')}</select></label><label class="wide">本页要讲什么<textarea data-field="message" maxlength="500">${escapeHtml(slide.message)}</textarea></label><label>补充要点（每行一条）<textarea data-field="bullets" maxlength="900">${escapeHtml(slide.bullets.join('\n'))}</textarea></label><label>对应 PDF 页码（逗号分隔）<input data-field="pages" value="${escapeAttr(slide.pages.join(', '))}" placeholder="例如：2, 5" /></label></div>
+      ${(slide.visuals || []).length ? `<p class="outline-visual-note">已关联图表：${slide.visuals.map(id => escapeHtml(state.visuals.find(item => item.id === id)?.title || id)).join('、')}</p>` : ''}
     </div></article>`).join('');
+  renderVisualSummary();
 }
 
 function slideById(id) { return state.slides.find(slide => slide.id === id); }
@@ -339,9 +381,13 @@ function outlineAction(event) {
 }
 
 function slideHtml(slide, index, print = false) {
-  const image = slide.image ? `<div class="slide-visual"><img src="${escapeAttr(slide.image)}" alt="用户添加的页面图片" /></div>` : slide.layout === 'split' ? '<div class="slide-visual"><div class="slide-visual-empty">可添加论文页截图<br>或自己的图片</div></div>' : '';
+  const linked = (slide.visuals || []).map(id => state.visuals.find(item => item.id === id)).filter(Boolean);
+  const images = [...linked.map(visual => ({ src: visual.url, title: visual.title, page: visual.page })),
+    ...(slide.image ? [{ src: slide.image, title: '手动添加的图片', page: null }] : [])];
+  const image = images.length ? `<div class="slide-visual-grid count-${Math.min(images.length, 3)}">${images.map(item => `<figure class="slide-figure"><img src="${escapeAttr(item.src)}" alt="${escapeAttr(item.title)}" /><figcaption>${escapeHtml(item.title)}${item.page ? ` · PDF 第 ${item.page} 页` : ''}</figcaption></figure>`).join('')}</div>`
+    : slide.layout === 'split' ? '<div class="slide-visual"><div class="slide-visual-empty">可添加论文图表<br>或自己的图片</div></div>' : '';
   const bullets = slide.bullets.length ? `<ul class="slide-bullets">${slide.bullets.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul>` : '';
-  return `<div class="slide-canvas theme-${escapeAttr(state.theme)} layout-${escapeAttr(slide.layout)} ${slide.image ? 'has-image' : ''}" style="--scale:${state.fontSize / 100};--image-scale:${state.imageSize / 100}">
+  return `<div class="slide-canvas theme-${escapeAttr(state.theme)} layout-${escapeAttr(slide.layout)} ${images.length ? `has-visuals visual-count-${Math.min(images.length, 3)}` : ''}" style="--scale:${state.fontSize / 100};--image-scale:${state.imageSize / 100}">
     <div class="slide-accent"></div><div class="slide-content"><div class="slide-kicker">RESEARCH PRESENTATION / ${String(index + 1).padStart(2, '0')}</div><h2 class="slide-title">${escapeHtml(slide.title || '未命名页面')}</h2><div class="slide-message">${escapeHtml(slide.message || '请返回大纲填写本页重点')}</div>${bullets}</div>${image}<div class="slide-footer"><span>${escapeHtml(state.fileName)}</span><span>${slide.pages.length ? `依据：PDF 第 ${slide.pages.join('、')} 页` : '页码待补充'} · ${String(index + 1).padStart(2, '0')}</span></div>
   </div>`;
 }
@@ -362,12 +408,17 @@ function renderSlideStudio() {
   $('prev-slide').disabled = state.selected === 0;
   $('next-slide').disabled = state.selected === state.slides.length - 1;
   $('paper-image-page').innerHTML = '<option value="">选择 PDF 页码</option>' + state.pages.map(page => `<option value="${page.page}">PDF 第 ${page.page} 页</option>`).join('');
+  $('current-visuals').innerHTML = (slide.visuals || []).map(id => {
+    const visual = state.visuals.find(item => item.id === id);
+    return visual ? `<div class="current-visual"><span>${escapeHtml(visual.title)}<small>PDF 第 ${visual.page} 页</small></span><button data-remove-visual="${escapeAttr(id)}" aria-label="从 PPT 移除 ${escapeAttr(visual.title)}">移除</button></div>` : '';
+  }).join('') || '<span class="visual-empty-note">当前页没有自动提取的图表</span>';
   $('insert-paper-page').disabled = !state.pdf;
   $('speaker-notes-input').value = slide.speakerNotes || '';
   const stale = slide.notesEdited && slide.notesSource !== notesSource(slide);
   $('speaker-notes-status').textContent = stale ? '大纲已修改，请检查讲稿' : slide.notesEdited ? '已手动修改' : '根据大纲整理';
   $('speaker-notes-status').classList.toggle('stale', stale);
   $('speaker-notes-source').textContent = slide.pages.length ? `内容依据：PDF 第 ${slide.pages.join('、')} 页` : '当前页没有标注论文页码';
+  renderVisualSummary();
   scheduleSave();
 }
 
@@ -395,6 +446,7 @@ async function insertPaperPage() {
 }
 
 function preparePrint() {
+  ensureVisualsAssigned();
   $('print-pages').innerHTML = state.slides.map((slide, index) => `<div class="print-page">${slideHtml(slide, index, true)}</div>`).join('');
   window.print();
 }
@@ -413,16 +465,17 @@ $('outline-list').addEventListener('input', outlineEdit);
 $('outline-list').addEventListener('change', outlineEdit);
 $('outline-list').addEventListener('click', outlineAction);
 $('add-slide').addEventListener('click', () => {
-  if (state.slides.length >= 10) return toast('当前原型最多支持 10 页。');
-  state.slides.push({ id: `slide-${Date.now()}`, title: '新的一页', message: '', bullets: [], pages: [], layout: 'statement', image: null, speakerNotes: '', notesEdited: false, notesSource: '' });
+  state.slides.push({ id: `slide-${Date.now()}`, title: '新的一页', message: '', bullets: [], pages: [], layout: 'statement', visuals: [], image: null, speakerNotes: '', notesEdited: false, notesSource: '' });
   markOutlineChanged(); renderOutline();
   scheduleSave();
 });
 $('confirm-outline').addEventListener('click', () => {
   if (state.slides.some(slide => !slide.title.trim() || !slide.message.trim())) return toast('请先填写每页标题和核心观点。');
+  ensureVisualsAssigned();
   prepareSpeakerNotes();
   state.confirmed = true;
   updateGateStatus();
+  renderOutline();
   setStep('slides');
   toast('大纲已确认，网页幻灯片已生成。');
 });
@@ -459,6 +512,15 @@ $('image-input').addEventListener('change', async event => {
 });
 $('insert-paper-page').addEventListener('click', insertPaperPage);
 $('remove-image').addEventListener('click', () => { state.slides[state.selected].image = null; refreshCurrentSlide(); });
+$('current-visuals').addEventListener('click', event => {
+  const button = event.target.closest('[data-remove-visual]');
+  if (!button) return;
+  const id = button.dataset.removeVisual;
+  state.slides[state.selected].visuals = (state.slides[state.selected].visuals || []).filter(item => item !== id);
+  if (!state.slides.some(slide => (slide.visuals || []).includes(id))) state.excludedVisualIds.push(id);
+  renderSlideStudio();
+  toast('已从汇报中移除该图表；原素材仍保存在图表清单中。');
+});
 $('print-slides').addEventListener('click', preparePrint);
 document.addEventListener('keydown', event => {
   if (state.step !== 'slides' || ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) return;

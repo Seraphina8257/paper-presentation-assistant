@@ -50,9 +50,10 @@ const schema = {
           message: { type: 'string' },
           bullets: { type: 'array', items: { type: 'string' } },
           pages: { type: 'array', items: { type: 'integer' } },
-          layout: { type: 'string', enum: ['cover', 'statement', 'split', 'steps', 'summary'] }
+          layout: { type: 'string', enum: ['cover', 'statement', 'split', 'steps', 'summary', 'visuals'] },
+          visualIds: { type: 'array', items: { type: 'string' } }
         },
-        required: ['title', 'message', 'bullets', 'pages', 'layout'],
+        required: ['title', 'message', 'bullets', 'pages', 'layout', 'visualIds'],
         additionalProperties: false
       }
     }
@@ -69,10 +70,11 @@ const instructions = [
   '先看这篇文章实际讨论了哪些问题、按什么顺序展开，再生成适合它的 4–8 页大纲；页数由内容决定，不要套固定的背景—方法—结果—结论结构。没有实验就不设实验页，没有明确结果就不写结果。',
   '写作口吻像学生整理的汇报提纲：用具体、平实、可核对的话说明论文说了什么。尽量沿用原文术语，不给论文贴“核心贡献”“研究范式”等评价标签，除非作者明确这样表述。不要写“赋能、闭环、论证链、构建某某框架、从A到B”等包装式表达；原文确实使用的专有名词可以保留。',
   '每页标题用简短的内容名称，不写宣传口号或悬念标题。封面优先用论文原标题或准确的短标题。message 用一句话说明这一页要讲的具体内容，尽量不超过 50 字。bullets 每条只写一个原文事实或要点，尽量不超过 35 字；不要用“研究类型：”“核心问题：”这样的标签凑内容。',
-  'outlineRationale 只用一句普通话说明汇报顺序，尽量不超过 80 字，例如“先介绍研究问题，再讲作者怎么做，最后看主要发现”。不要把多个抽象名词串成一句话。'
+  'outlineRationale 只用一句普通话说明汇报顺序，尽量不超过 80 字，例如“先介绍研究问题，再讲作者怎么做，最后看主要发现”。不要把多个抽象名词串成一句话。',
+  '如果输入末尾有图表素材清单，可在对应页面的 visualIds 中引用清单内的真实 ID；不要编造 ID、编号、页码或图片地址。每个图表由程序保证至少出现一次，你不必舍弃任何图表。'
 ].join('\n');
 
-export async function analyzeWithDeepSeek(pages, { apiKey, model = 'deepseek-flash', fetchImpl = fetch } = {}) {
+export async function analyzeWithDeepSeek(pages, { apiKey, model = 'deepseek-flash', visuals = [], fetchImpl = fetch } = {}) {
   if (!apiKey) throw new Error('尚未配置 DeepSeek API Key。');
   const response = await fetchImpl('https://api.deepseek.com/responses', {
     method: 'POST',
@@ -81,7 +83,7 @@ export async function analyzeWithDeepSeek(pages, { apiKey, model = 'deepseek-fla
       model,
       input: [
         { role: 'system', content: instructions },
-        { role: 'user', content: makeModelInput(pages) }
+        { role: 'user', content: makeModelInput(pages, visuals) }
       ],
       reasoning: { effort: 'low' },
       max_output_tokens: 16000,
@@ -102,7 +104,7 @@ export async function analyzeWithDeepSeek(pages, { apiKey, model = 'deepseek-fla
   if (!resultText) throw new Error('DeepSeek 未返回可用内容，请重试。');
   let result;
   try {
-    result = validateAnalysis(JSON.parse(resultText), pages.length);
+    result = validateAnalysis(JSON.parse(resultText), pages.length, visuals.map(item => item.id));
   } catch (error) {
     throw new Error(`DeepSeek 返回的大纲无法读取：${error.message}`);
   }
