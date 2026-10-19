@@ -19,3 +19,27 @@
 .local-save-note{font-size:11px;line-height:1.65;color:#717a69;text-align:center;max-width:690px;margin:0 auto 19px}
 
 .preview-topline>div{align-items:center}.preview-topline .button{padding:7px 10px;font-size:11px;gap:0}.speaker-notes-buttons{display:flex;flex-wrap:wrap;gap:8px}.fullscreen-exit{display:none}.slide-stage:fullscreen{width:100vw;height:100vh;padding:3vh 3vw;background:#181b16;border-radius:0;display:flex;align-items:center;justify-content:center;overflow:hidden}.slide-stage:fullscreen .slide-canvas{width:min(94vw,167.11vh);height:auto;flex:none;box-shadow:0 20px 70px #0008}.slide-stage:fullscreen .fullscreen-exit{display:block;position:fixed;right:20px;top:18px;z-index:3;background:#222a21;color:white;border:1px solid #ffffff66;border-radius:7px;padding:9px 13px;font-size:12px}.slide-stage:fullscreen .slide-kicker{font-size:clamp(10px,1.1vw,18px)}.slide-stage:fullscreen .slide-title{font-size:calc(clamp(28px,3.5vw,62px)*var(--scale))}.slide-stage:fullscreen .slide-message{font-size:calc(clamp(14px,1.55vw,28px)*var(--scale))}.slide-stage:fullscreen .slide-bullets{font-size:calc(clamp(11px,1.1vw,20px)*var(--scale))}.slide-stage:fullscreen .slide-footer{font-size:clamp(8px,.75vw,13px)}
+
+/* HTML adaptation of the HNU academic presentation style; no institutional logo or master asset. */
+.slide-canvas.theme-hnu{background:#fbfaf7;color:#263245;--accent:#a6232b;--muted:#44618a;--panel:#f2ece9;font-family:'Microsoft YaHei','Noto Sans SC',sans-serif;padding:5.5% 6%}
+.slide-canvas.theme-hnu::before{content:'';position:absolute;inset:0 0 auto;height:2.1%;background:linear-gradient(90deg,#a6232b 0 71%,#1d4999 71% 100%)}
+.slide-canvas.theme-hnu .slide-accent{width:5.2%;height:1.1%;background:#a6232b;clip-path:polygon(0 0,100% 0,78% 100%,0 100%)}
+.slide-canvas.theme-hnu .slide-content{position:relative;z-index:2;gap:.85vw}
+.slide-canvas.theme-hnu .slide-kicker{color:#1d4999;font-weight:800;letter-spacing:.12em}
+.slide-canvas.theme-hnu .slide-title{color:#203d70;letter-spacing:-.04em;line-height:1.17}
+.slide-canvas.theme-hnu .slide-message{background:#fff;box-shadow:inset .4vw 0 #a6232b;padding:.8vw 1.05vw;line-height:1.42;max-width:94%;font-weight:600}
+.slide-canvas.theme-hnu .slide-bullets{grid-template-columns:repeat(2,minmax(0,1fr));gap:.45vw;counter-reset:hnu-point;line-height:1.35}
+.slide-canvas.theme-hnu .slide-bullets li{display:flex;align-items:flex-start;min-width:0;min-height:2.8vw;background:#f5ebe9;padding:.6vw .8vw;clip-path:polygon(0 0,100% 0,100% 78%,95% 78%,95% 100%,0 100%);overflow-wrap:anywhere}
+.slide-canvas.theme-hnu .slide-bullets li:nth-child(even){background:#eaf0f8}
+.slide-canvas.theme-hnu .slide-bullets li::before{counter-increment:hnu-point;content:counter(hnu-point,decimal-leading-zero);display:inline-block;flex:none;color:#a6232b;font-weight:800;margin-right:.55vw}
+.slide-canvas.theme-hnu .slide-footer{border-top:1px solid #cbd5e2;padding-top:.55vw;color:#56657a;position:relative;z-index:2}
+.slide-canvas.theme-hnu.layout-cover:not(.has-visuals)::after{content:'';display:block;position:absolute;right:0;top:2.1%;width:36%;height:98%;border:0;border-radius:0;background:linear-gradient(132deg,#f0dadd 0 44%,#a6232b 44% 55%,#dce6f3 55% 100%);clip-path:polygon(34% 0,100% 0,100% 100%,0 100%,0 36%);opacity:.85}
+.slide-canvas.theme-hnu.layout-cover .slide-title{max-width:72%;color:#a6232b}
+.slide-canvas.theme-hnu.layout-cover .slide-message{max-width:61%}
+.slide-canvas.theme-hnu.layout-summary .slide-title{color:#a6232b}
+.slide-canvas.theme-hnu.has-visuals.visual-count-1 .slide-content{max-width:42%}
+.slide-canvas.theme-hnu.has-visuals.visual-count-1 .slide-message{max-width:100%}
+.slide-canvas.theme-hnu.has-visuals.visual-count-1 .slide-bullets,.slide-canvas.theme-hnu.layout-split .slide-bullets{grid-template-columns:1fr}
+.slide-canvas.theme-hnu .slide-visual-grid.count-2,.slide-canvas.theme-hnu .slide-visual-grid.count-3{top:43%;height:40%}
+.slide-canvas.theme-hnu .slide-figure{background:#fff;border-radius:0;box-shadow:0 0 .3vw #203d701a}
+.slide-canvas.theme-hnu .slide-figure figcaption{color:#445775}
